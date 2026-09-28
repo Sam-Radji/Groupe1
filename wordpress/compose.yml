@@ -1,0 +1,63 @@
+name: wordpress
+
+services:
+  wordpress-db:
+    image: mariadb:10.11
+    container_name: wordpress-db
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?à définir dans .env}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:?à définir dans .env}
+      MARIADB_USER: ${MARIADB_USER:?à définir dans .env}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:?à définir dans .env}
+    volumes:
+      - wordpress_db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - wordpress-net      # réseau privé : la base n'est joignable que par WordPress
+
+  wordpress:
+    image: wordpress:latest
+    container_name: wordpress
+    restart: unless-stopped
+    depends_on:
+      wordpress-db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: wordpress-db
+      WORDPRESS_DB_USER: ${MARIADB_USER}
+      WORDPRESS_DB_PASSWORD: ${MARIADB_PASSWORD}
+      WORDPRESS_DB_NAME: ${MARIADB_DATABASE}
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/wordpress   # utilisé par le plugin/mu-plugin de webhook
+    volumes:
+      - wordpress_data:/var/www/html
+      - ./mu-plugins:/var/www/html/wp-content/mu-plugins:ro
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/ -o /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - wordpress-net     # accès à MariaDB
+      - services-net      # envoi du webhook vers n8n, supervision par Zabbix
+
+volumes:
+  wordpress_db_data:
+  wordpress_data:
+
+networks:
+  wordpress-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.1.0/24
+  services-net:
+    external: true
