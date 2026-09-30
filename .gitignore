@@ -1,0 +1,5 @@
+*.log
+.env
+data/
+mariadb_data/
+wp_files/
