@@ -1,60 +1,191 @@
-# Déclaration des services applicatifs
 services:
-
-  # --- Service Base de Données (MariaDB) ---
   db:
     image: mariadb:10.11
-    container_name: wp_mariadb
-    restart: always
+    restart: unless-stopped
     environment:
-      # Mot de passe administrateur MariaDB (root)
-      MYSQL_ROOT_PASSWORD: secret_root_pass
-      # Base de données créée à l'initialisation
-      MYSQL_DATABASE: wordpress_db
-      # Utilisateur applicatif dédié à WordPress
-      MYSQL_USER: wp_user
-      # Mot de passe de l'utilisateur applicatif
-      MYSQL_PASSWORD: secret_user_pass
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${WORDPRESS_DB_NAME:?Set WORDPRESS_DB_NAME in .env}
+      MYSQL_USER: ${WORDPRESS_DB_USER:?Set WORDPRESS_DB_USER in .env}
+      MYSQL_PASSWORD: ${WORDPRESS_DB_PASSWORD:?Set WORDPRESS_DB_PASSWORD in .env}
     volumes:
-      # Sauvegarde durable des données SQL hors du conteneur
       - mariadb_data:/var/lib/mysql
     networks:
-      # Connexion au réseau interne privé
-      - wp_internal_network
+      - database
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
-  # --- Service Applicatif Web (WordPress) ---
   wordpress:
-    # Construit l'image à partir du Dockerfile présent dans le répertoire courant
     build: .
-    container_name: wp_core
-    restart: always
+    restart: unless-stopped
     depends_on:
-      # Attend le démarrage du conteneur 'db' avant de lancer WordPress
-      - db
-    ports:
-      # Mappe le port public 8080 de la VM sur le port 80 HTTP interne du conteneur
-      - "8080:80"
+      db:
+        condition: service_healthy
     environment:
-      # Résolution DNS Docker : 'db' pointe directement sur le conteneur MariaDB
       WORDPRESS_DB_HOST: db:3306
-      # Nom de la base de données ciblée
-      WORDPRESS_DB_NAME: wordpress_db
-      # Identifiants de connexion
-      WORDPRESS_DB_USER: wp_user
-      WORDPRESS_DB_PASSWORD: secret_user_pass
+      WORDPRESS_DB_NAME: ${WORDPRESS_DB_NAME:?Set WORDPRESS_DB_NAME in .env}
+      WORDPRESS_DB_USER: ${WORDPRESS_DB_USER:?Set WORDPRESS_DB_USER in .env}
+      WORDPRESS_DB_PASSWORD: ${WORDPRESS_DB_PASSWORD:?Set WORDPRESS_DB_PASSWORD in .env}
     volumes:
-      # Persistance des médias, thèmes et plugins WordPress
-      - wp_files:/var/www/html
+      - wordpress_files:/var/www/html
     networks:
-      # Partage le même réseau que la base de données
-      - wp_internal_network
+      - proxy
+      - database
 
-# Déclaration des volumes pour éviter toute perte de données
+  reverse-proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - wordpress
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - proxy
+
+  n8n-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${N8N_DB_NAME:?Set N8N_DB_NAME in .env}
+      POSTGRES_USER: ${N8N_DB_USER:?Set N8N_DB_USER in .env}
+      POSTGRES_PASSWORD: ${N8N_DB_PASSWORD:?Set N8N_DB_PASSWORD in .env}
+    volumes:
+      - n8n_db_data:/var/lib/postgresql/data
+    networks:
+      - n8n
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    depends_on:
+      n8n-db:
+        condition: service_healthy
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: n8n-db
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${N8N_DB_NAME:?Set N8N_DB_NAME in .env}
+      DB_POSTGRESDB_USER: ${N8N_DB_USER:?Set N8N_DB_USER in .env}
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD:?Set N8N_DB_PASSWORD in .env}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?Set N8N_ENCRYPTION_KEY in .env}
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      N8N_EDITOR_BASE_URL: http://localhost:5678/
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_LISTEN_ADDRESS: 0.0.0.0
+      N8N_PROXY_HOPS: 0
+      N8N_SECURE_COOKIE: "false"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      GENERIC_TIMEZONE: Europe/Paris
+      TZ: Europe/Paris
+    ports:
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - n8n
+
+  zabbix-db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${ZABBIX_DB_ROOT_PASSWORD:?Set ZABBIX_DB_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${ZABBIX_DB_NAME:?Set ZABBIX_DB_NAME in .env}
+      MYSQL_USER: ${ZABBIX_DB_USER:?Set ZABBIX_DB_USER in .env}
+      MYSQL_PASSWORD: ${ZABBIX_DB_PASSWORD:?Set ZABBIX_DB_PASSWORD in .env}
+    volumes:
+      - zabbix_db_data:/var/lib/mysql
+    networks:
+      - monitoring
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  zabbix-server:
+    image: zabbix/zabbix-server-mysql:alpine-7.0-latest
+    restart: unless-stopped
+    depends_on:
+      zabbix-db:
+        condition: service_healthy
+    environment:
+      DB_SERVER_HOST: zabbix-db
+      MYSQL_DATABASE: ${ZABBIX_DB_NAME:?Set ZABBIX_DB_NAME in .env}
+      MYSQL_USER: ${ZABBIX_DB_USER:?Set ZABBIX_DB_USER in .env}
+      MYSQL_PASSWORD: ${ZABBIX_DB_PASSWORD:?Set ZABBIX_DB_PASSWORD in .env}
+    networks:
+      - monitoring
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-mysql:alpine-7.0-latest
+    restart: unless-stopped
+    depends_on:
+      zabbix-db:
+        condition: service_healthy
+      zabbix-server:
+        condition: service_started
+    environment:
+      DB_SERVER_HOST: zabbix-db
+      MYSQL_DATABASE: ${ZABBIX_DB_NAME:?Set ZABBIX_DB_NAME in .env}
+      MYSQL_USER: ${ZABBIX_DB_USER:?Set ZABBIX_DB_USER in .env}
+      MYSQL_PASSWORD: ${ZABBIX_DB_PASSWORD:?Set ZABBIX_DB_PASSWORD in .env}
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_SERVER_PORT: 10051
+      PHP_TZ: Europe/Paris
+    ports:
+      - "127.0.0.1:8081:8080"
+    networks:
+      - monitoring
+
+  zabbix-agent:
+    image: zabbix/zabbix-agent2:alpine-7.0-latest
+    restart: unless-stopped
+    user: "0:0"
+    depends_on:
+      zabbix-server:
+        condition: service_started
+    environment:
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_SERVER_ACTIVE: zabbix-server:10051
+      ZBX_HOSTNAME: ${ZABBIX_HOSTNAME:-groupe1-wordpress-vm}
+      ZBX_ACTIVE_ALLOW: "true"
+    expose:
+      - "10050"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./zabbix/agent2.d/plugins.d/docker.conf:/etc/zabbix/zabbix_agent2.d/plugins.d/docker.conf:ro
+    networks:
+      - monitoring
+
 volumes:
   mariadb_data:
-  wp_files:
+  wordpress_files:
+  caddy_data:
+  caddy_config:
+  n8n_db_data:
+  n8n_data:
+  zabbix_db_data:
 
-# Réseau Docker isolé dédié à l'application
 networks:
-  wp_internal_network:
-    driver: bridge
+  proxy:
+  database:
+    internal: true
+  n8n:
+  monitoring:

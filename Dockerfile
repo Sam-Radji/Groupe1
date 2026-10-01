@@ -1,7 +1,7 @@
-# Utilisation de l'image officielle WordPress
-FROM wordpress:6.4-apache
+# Image officielle WordPress avec PHP et Apache
+FROM wordpress:php8.3-apache
 
-# Mise à jour des paquets et installation du client MySQL et de cURL
+# Outils utiles au diagnostic et à l'administration de la base
 RUN apt-get update && apt-get install -y \
     default-mysql-client \
     curl \
