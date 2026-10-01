@@ -92,57 +92,10 @@ Dans le **portail Azure**, vérifiez d’abord qu’une adresse IP publique est 
 
 n8n reste volontairement privé et annonce ses URL d’éditeur/webhook sous `localhost:5678` ; des services externes ne pourront donc pas appeler ses webhooks entrants.
 
-## Tester les services
-
-Sur la VM, vérifie d’abord l’état des conteneurs et teste les trois interfaces HTTP en local :
-
-```bash
-docker compose ps
-curl -sSI --max-time 10 http://127.0.0.1/
-curl -sSI --max-time 10 http://127.0.0.1:5678/
-curl -sSI --max-time 10 http://127.0.0.1:8081/
-```
-
-- **Caddy et WordPress** : la première requête passe par le reverse proxy ; une réponse `200` ou une redirection `301`/`302` est attendue. Un `302` vers `/wp-admin/install.php` signifie que WordPress attend encore son installation initiale. Vérifie la configuration Caddy avec `docker compose exec reverse-proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`.
-- **n8n** : l’interface doit répondre sur `127.0.0.1:5678`. Pour le navigateur depuis ton poste, ouvre le tunnel SSH ci-dessous puis va sur `http://localhost:5678`.
-- **Zabbix** : l’interface web doit répondre sur `127.0.0.1:8081`. Ouvre le même tunnel SSH puis va sur `http://localhost:8081`. Identifiants initiaux habituels : `Admin` / `zabbix` ; change le mot de passe après connexion.
-
-Depuis le poste d’administration, crée un tunnel SSH vers la VM (garde cette session ouverte) :
-
-```bash
-ssh -L 5678:127.0.0.1:5678 -L 8081:127.0.0.1:8081 utilisateur@IP_PUBLIQUE
-```
-
-Dans Zabbix, configure l’hôte `groupe1-wordpress-vm` avec une interface **DNS** `zabbix-agent`, port `10050`, et associe uniquement **Docker by Zabbix agent 2**. Dans **Monitoring → Latest data**, sélectionne cet hôte et vérifie la découverte des conteneurs et les items Docker. Le port agent est privé au réseau Compose ; aucun port Zabbix n’est à ouvrir dans Azure.
-
-Pour confirmer que seules les interfaces prévues sont publiées, vérifie `docker compose ps` : Caddy publie le port `80`, n8n `127.0.0.1:5678`, l’interface Zabbix `127.0.0.1:8081`. Le serveur Zabbix, son agent et les bases ne doivent pas avoir de port hôte publié.
-
-## Accéder aux interfaces privées
-
-- **VM Azure :** créez un tunnel SSH depuis votre poste, en remplaçant l’adresse par l’adresse publique de la VM :
-
-  ```sh
-  ssh -L 5678:127.0.0.1:5678 -L 8081:127.0.0.1:8081 azureuser@ADRESSE_PUBLIQUE
-  ```
-
-  Laissez le tunnel actif, puis ouvrez les mêmes adresses `localhost` dans le navigateur.
-- WordPress est accessible sur `http://ADRESSE_DE_LA_MACHINE`. Dans Zabbix, changez le mot de passe initial `Admin` / `zabbix`.
-- Lors de la première visite de n8n, créez le compte propriétaire.
-
-WordPress utilise actuellement HTTP uniquement : accédez à `http://IP_PUBLIQUE`, pas à `https://IP_PUBLIQUE`. Pour distinguer un problème du reverse proxy d’un blocage Azure, `curl -I http://127.0.0.1/` sur la VM doit retourner une réponse WordPress (souvent `302` vers l’installation initiale). Si ce test marche localement mais pas depuis Internet, vérifiez l’IP publique, le NSG effectif, puis le pare-feu de l’hôte ; le reverse proxy fonctionne alors et le blocage est en amont de la VM.
-
-## Superviser les conteneurs de cette VM avec Zabbix
-
-L’agent local annonce par défaut le nom `groupe1-wordpress-vm` (ou la valeur configurée dans `ZABBIX_HOSTNAME`). Dans l’interface Zabbix, configure cet hôte avec une interface Agent de type **DNS**, nom `zabbix-agent`, port `10050`. Ce nom Docker est résolu par le serveur Zabbix sur le réseau Compose `monitoring`. Associe **uniquement** le modèle **Docker by Zabbix agent 2** ; ne lie pas de modèle Linux si la VM elle-même ne doit pas être supervisée.
-
-L’agent reçoit uniquement le socket Docker : il ne partage pas le PID, `/proc`, `/sys` ni la racine de l’hôte. Il peut découvrir les conteneurs du moteur Docker de cette VM, c’est-à-dire les conteneurs de la pile du projet si aucun autre projet ne tourne sur ce moteur. Le socket Docker confère des privilèges élevés ; ne l’expose pas à l’extérieur.
-
-## Arrêter et conserver les données
+## Arrêter
 
 Depuis le répertoire du projet :
 
 ```sh
 docker compose down
 ```
-
-Les volumes nommés conservent les données WordPress, n8n et Zabbix. `docker compose down -v` supprime aussi ces données ; ne l’utilisez que si leur effacement est voulu.
