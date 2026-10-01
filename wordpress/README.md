@@ -48,8 +48,10 @@ docker compose start wordpress
 
 ## Informations pour le responsable Zabbix
 
-- Cible à superviser : `http://wordpress:80` (code HTTP 200, via `services-net`)
-- Conteneurs : `wordpress` et `wordpress-db`
+- Un agent `wordpress-agent` (Zabbix Agent 2) est inclus dans ce compose, connecté à `services-net`.
+- Créer dans Zabbix un hôte nommé **`wordpress`** (doit correspondre exactement à `ZBX_HOSTNAME`), interface **Agent**, adresse DNS `wordpress-agent`, port `10050`.
+- Ajouter le template **Docker by Zabbix agent 2** pour surveiller les conteneurs (`wordpress`, `wordpress-db`), et éventuellement **Linux by Zabbix agent 2** pour CPU/RAM.
+- Garder aussi, si besoin, le scénario web `http://wordpress:80` en complément (vérifie que le site répond, pas seulement que l'agent est joignable).
 
 ## Dépannage
 

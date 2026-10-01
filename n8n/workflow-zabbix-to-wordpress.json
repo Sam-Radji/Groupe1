@@ -1,0 +1,76 @@
+{
+  "name": "Zabbix alert -> WordPress post",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "zabbix-alert",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "z1a2b3c4-0001-4000-8000-000000000001",
+      "name": "Webhook Zabbix",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "c8d2b3f5-0000-4000-8000-0000000000b1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $input.first().json.body || {};\n\n// Champs attendus, envoyés par le media type webhook de Zabbix :\n// host, problem, severity, status (PROBLEM / RESOLVED), eventId\nconst host = b.host || 'Inconnu';\nconst problem = b.problem || 'Problème non précisé';\nconst severity = b.severity || 'Not classified';\nconst status = (b.status || 'PROBLEM').toUpperCase();\n\nconst title = status === 'RESOLVED'\n  ? `Rétabli : ${host} - ${problem}`\n  : `Alerte : ${host} a un problème (${problem})`;\n\nconst content = status === 'RESOLVED'\n  ? `Le problème \"${problem}\" sur ${host} est résolu.`\n  : `Zabbix a détecté un problème sur ${host}.\\n\\nProblème : ${problem}\\nSévérité : ${severity}\\nStatut : ${status}`;\n\nreturn [{ json: { title, content, host, problem, severity, status } }];"
+      },
+      "id": "z1a2b3c4-0002-4000-8000-000000000002",
+      "name": "Construire le message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://wordpress:80/wp-json/wp/v2/posts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"title\": $json.title, \"content\": $json.content, \"status\": \"publish\" } }}",
+        "options": {}
+      },
+      "id": "z1a2b3c4-0003-4000-8000-000000000003",
+      "name": "Publier sur WordPress",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 0],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "REMPLACER_PAR_ID_CREDENTIAL",
+          "name": "WordPress Application Password"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"forwarded\": true, \"wordpressStatus\": $json.id ? \"created\" : \"error\" } }}",
+        "options": {}
+      },
+      "id": "z1a2b3c4-0004-4000-8000-000000000004",
+      "name": "Répondre",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [720, 0]
+    }
+  ],
+  "connections": {
+    "Webhook Zabbix": {
+      "main": [[{ "node": "Construire le message", "type": "main", "index": 0 }]]
+    },
+    "Construire le message": {
+      "main": [[{ "node": "Publier sur WordPress", "type": "main", "index": 0 }]]
+    },
+    "Publier sur WordPress": {
+      "main": [[{ "node": "Répondre", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

@@ -7,7 +7,9 @@ Conteneurs : `zabbix-server` (moteur), `zabbix-web` (interface) et `zabbix-db` (
 | `monitoring-net` | 172.31.3.0/24 | zabbix-server, zabbix-web, zabbix-db | Communication interne Zabbix |
 | `services-net` (externe) | 172.30.0.0/24 | zabbix-server (+ wordpress, n8n) | Contrôle HTTP des services |
 
-Seul `zabbix-server` est sur `services-net` : c'est lui qui interroge WordPress et n8n. `zabbix-web` n'a pas besoin d'y être.
+Seul `zabbix-server` est sur `services-net` : c'est lui qui interroge les agents de WordPress et n8n. `zabbix-web` n'a pas besoin d'y être.
+
+Un agent `zabbix-agent` est aussi inclus ici, pour surveiller l'hôte Zabbix lui-même (CPU/RAM/conteneurs), sur `monitoring-net` uniquement (`zabbix-server` y a déjà accès, pas besoin de `services-net`).
 
 ## Démarrage
 
@@ -23,19 +25,43 @@ docker compose ps   # les 3 services doivent démarrer ; zabbix-db "healthy"
 
 Interface : `http://IP:8080`. Identifiants par défaut : `Admin` / `zabbix` — **à changer immédiatement**.
 
-## Configurer la supervision de WordPress et n8n
+## Configurer la supervision par agents
 
-Zabbix Server contacte directement les URLs en HTTP (scénarios web), sans agent à installer sur WordPress ou n8n.
+Chaque stack (`wordpress/`, `n8n/`, et `monitoring/` lui-même) déploie désormais un conteneur `*-agent` (Zabbix Agent 2) connecté à `services-net` (ou `monitoring-net` pour le sien propre). Zabbix Server les interroge activement en plus des scénarios web HTTP.
+
+| Hôte à créer | Nom exact (`ZBX_HOSTNAME`) | Adresse DNS de l'interface Agent | Port |
+|---|---|---|---|
+| WordPress | `wordpress` | `wordpress-agent` | 10050 |
+| n8n | `n8n` | `n8n-agent` | 10050 |
+| Zabbix (lui-même) | `Zabbix server` | `zabbix-agent` | 10050 |
+
+Pour chaque ligne :
 
 1. *Data collection > Hosts > Create host*
-   - Nom : `wordpress` — Groupe : `Services`
-   - Interface : aucune nécessaire pour un scénario web seul
-2. *Web scenarios > Create web scenario* sur l'hôte `wordpress` :
-   - Nom : `Disponibilité WordPress`
-   - Étape : Nom `Accueil`, URL `http://wordpress:80`, code de statut attendu `200`
-3. Répéter pour l'hôte `n8n` avec l'URL `http://n8n:5678/healthz`
-4. *Triggers* : un déclencheur est créé automatiquement en cas d'échec du scénario (statut ≠ 200) ; vérifier son niveau de sévérité (Warning ou High).
-5. *Dashboards > Create dashboard* : ajouter les widgets « Problems » et l'état des deux scénarios web.
+   - Nom : exactement la valeur de la colonne « Nom exact »
+   - Groupe : `Services`
+   - Interfaces : **Agent**, adresse DNS = colonne correspondante, port `10050`
+2. Onglet **Templates** : lier **Docker by Zabbix agent 2** (surveillance des conteneurs) et **Linux by Zabbix agent 2** (CPU/RAM/disque de l'hôte).
+3. (Optionnel, en complément) *Web scenarios > Create web scenario* :
+   - Pour `wordpress` : URL `http://wordpress:80`, code attendu `200`
+   - Pour `n8n` : URL `http://n8n:5678/healthz`, code attendu `200`
+4. *Dashboards > Create dashboard* : ajouter les widgets « Problems », CPU/RAM par hôte, et l'état des scénarios web.
+
+## Envoyer les alertes vers n8n (webhook sortant)
+
+But : quand un problème est détecté (ou résolu), Zabbix doit appeler n8n, qui créera un article sur WordPress.
+
+1. *Alerts > Media types > Create media type*
+   - Nom : `Webhook n8n`
+   - Type : `Webhook`
+   - Paramètres : ajouter `host` = `{HOST.NAME}`, `problem` = `{EVENT.NAME}`, `severity` = `{EVENT.SEVERITY}`, `status` = `{EVENT.STATUS}`
+   - Script JS (adapter le script par défaut fourni par Zabbix) : faire un `HttpRequest().post()` vers `http://n8n:5678/webhook/zabbix-alert` avec ces paramètres en corps JSON.
+2. *Users > Admin > Media* : ajouter ce media type à l'utilisateur Admin (ou à un utilisateur dédié).
+3. *Alerts > Actions > Trigger actions > Create action*
+   - Nom : `Notifier n8n`
+   - Conditions : par exemple tous les hôtes du groupe `Services`
+   - Onglet **Operations** : envoyer via `Webhook n8n`
+   - Onglet **Recovery operations** : cocher aussi l'envoi à la résolution, pour que WordPress reçoive l'article « Rétabli : ... »
 
 ## Test de panne (démonstration)
 

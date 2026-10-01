@@ -55,6 +55,19 @@ services:
       - n8n-net          # accès à PostgreSQL
       - services-net     # réception des webhooks WordPress, supervision Zabbix
 
+  n8n-agent:
+    image: zabbix/zabbix-agent2:alpine-7.0-latest
+    container_name: n8n-agent
+    restart: unless-stopped
+    user: root            # nécessaire pour lire le socket Docker
+    environment:
+      ZBX_HOSTNAME: "n8n"               # doit correspondre au nom d'hôte créé dans Zabbix
+      ZBX_SERVER_HOST: zabbix-server    # autorise uniquement ce serveur à l'interroger
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - services-net       # Zabbix Server doit pouvoir le joindre sur ce réseau
+
 volumes:
   n8n_db_data:
   n8n_data:

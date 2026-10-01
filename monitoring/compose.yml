@@ -57,6 +57,19 @@ services:
     networks:
       - monitoring-net    # accès à PostgreSQL
 
+  zabbix-agent:
+    image: zabbix/zabbix-agent2:alpine-7.0-latest
+    container_name: zabbix-agent
+    restart: unless-stopped
+    user: root            # nécessaire pour lire le socket Docker
+    environment:
+      ZBX_HOSTNAME: "Zabbix server"      # nom d'hôte par défaut déjà présent dans Zabbix
+      ZBX_SERVER_HOST: zabbix-server
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - monitoring-net     # zabbix-server est déjà sur ce réseau, pas besoin de services-net
+
 volumes:
   zabbix_db_data:
   zabbix_server_data:

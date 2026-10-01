@@ -88,8 +88,31 @@ docker compose start n8n     # puis retour à la normale
 
 ## Informations pour le responsable Zabbix
 
-- Cible à superviser : `http://n8n:5678/healthz` (code HTTP 200, via `services-net`)
-- Conteneurs : `n8n` et `n8n-db`
+- Un agent `n8n-agent` (Zabbix Agent 2) est inclus dans ce compose, connecté à `services-net`.
+- Créer dans Zabbix un hôte nommé **`n8n`** (doit correspondre exactement à `ZBX_HOSTNAME`), interface **Agent**, adresse DNS `n8n-agent`, port `10050`.
+- Ajouter le template **Docker by Zabbix agent 2** pour surveiller les conteneurs, et éventuellement **Linux by Zabbix agent 2** pour CPU/RAM de l'hôte.
+- Garder aussi, si besoin, le scénario web `http://n8n:5678/healthz` en complément (vérifie que l'application répond, pas seulement que l'agent est joignable).
+
+## Webhook entrant : alertes Zabbix -> article WordPress
+
+Workflow `workflow-zabbix-to-wordpress.json` : reçoit une alerte Zabbix sur `/webhook/zabbix-alert`, construit un titre et un contenu, puis crée un article sur WordPress via son API REST.
+
+1. Importer le workflow dans n8n, l'activer.
+2. Créer le credential **HTTP Basic Auth** dans le nœud *Publier sur WordPress* avec un Application Password WordPress (*Utilisateurs > Profil > Mots de passe d'application*).
+3. Donner au responsable Zabbix l'URL à appeler : `http://n8n:5678/webhook/zabbix-alert`, avec le corps JSON attendu :
+   ```json
+   { "host": "n8n", "problem": "RAM élevée", "severity": "High", "status": "PROBLEM" }
+   ```
+
+Test sans Zabbix :
+
+```bash
+curl -X POST http://localhost:5678/webhook/zabbix-alert \
+  -H "Content-Type: application/json" \
+  -d '{"host":"n8n","problem":"Test alerte","severity":"Warning","status":"PROBLEM"}'
+```
+
+Vérifier qu'un article apparaît dans WordPress.
 
 ## Dépannage
 

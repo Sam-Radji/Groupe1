@@ -49,6 +49,19 @@ services:
       - wordpress-net     # accès à MariaDB
       - services-net      # envoi du webhook vers n8n, supervision par Zabbix
 
+  wordpress-agent:
+    image: zabbix/zabbix-agent2:alpine-7.0-latest
+    container_name: wordpress-agent
+    restart: unless-stopped
+    user: root            # nécessaire pour lire le socket Docker
+    environment:
+      ZBX_HOSTNAME: "wordpress"          # doit correspondre au nom d'hôte créé dans Zabbix
+      ZBX_SERVER_HOST: zabbix-server     # autorise uniquement ce serveur à l'interroger
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - services-net       # Zabbix Server doit pouvoir le joindre sur ce réseau
+
 volumes:
   wordpress_db_data:
   wordpress_data:
