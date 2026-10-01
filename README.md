@@ -16,58 +16,47 @@ Le dépôt déploie une pile Docker Compose sur une VM Linux Azure déjà créé
 Les interfaces n8n et Zabbix ne sont pas routées par Caddy et ne sont pas accessibles depuis Internet. L’agent et le serveur Zabbix communiquent sur leur réseau Docker privé ; aucun port Zabbix n’est publié sur la VM. Les bases de données ne publient aucun port.
 
 ```mermaid
-flowchart TB
-    Internet((Internet))
-    Visitor[Visiteur du site]
-    Admin[Poste administrateur]
-    PublicIP[IP publique Azure]
-    NSG[NSG : TCP 80 public<br/>TCP 22 SSH autorisé]
+flowchart LR
+    Visitor([Visiteur]) --> Internet((Internet))
+    Internet --> PublicIP[IP publique Azure]
+    PublicIP --> NSG["NSG<br/>TCP 80 autorisé"]
+    NSG -->|"TCP 80"| HostPort["Publication Docker<br/>VM:80 → conteneur:80"]
 
-    Visitor --> Internet --> PublicIP
-    Admin -. "Tunnel SSH TCP 22" .-> Internet
-    PublicIP --> NSG
-    NSG -->|"TCP 80"| VM
-    NSG -->|"SSH 22, source autorisée"| VM
-    Admin -. "redirections SSH localhost:5678 et :8081" .-> VM
+    Admin["Administrateur"] -. "SSH, TCP 22" .-> PublicIP
+    Admin -. "Tunnel SSH<br/>5678 et 8081" .-> Loopback
 
     subgraph VM["VM Linux Azure"]
-        subgraph Docker["Docker Engine"]
-            PublishedHTTP["Publication Docker<br/>VM:80 → Caddy:80"]
+        subgraph Engine["Docker Engine · Docker Compose"]
+            HostPort --> Caddy["Caddy<br/>reverse proxy"]
+            Caddy -->|"HTTP · réseau proxy"| WordPress["WordPress<br/>réseaux proxy + database"]
+            WordPress -->|"MariaDB · TCP 3306<br/>réseau database"| WPDB[("Base WordPress<br/>MariaDB")]
 
-            subgraph proxy_net["Réseau Compose : proxy"]
-                Caddy["Caddy<br/>reverse proxy"]
-                WordPress["WordPress<br/>port 80<br/>réseaux proxy + database"]
-            end
+            N8N["n8n<br/>réseau n8n<br/>VM:127.0.0.1:5678"]
+            N8N -->|"TCP 5432 · réseau n8n"| N8NDB[("Base n8n<br/>PostgreSQL")]
 
-            subgraph wp_db_net["Réseau Compose interne : database"]
-                WPDB["MariaDB WordPress<br/>port 3306"]
-            end
+            ZabbixWeb["Interface Zabbix<br/>réseau monitoring<br/>VM:127.0.0.1:8081"]
+            ZabbixWeb -->|"réseau monitoring"| ZabbixServer["Zabbix Server<br/>réseau monitoring"]
+            ZabbixWeb -->|"TCP 3306"| ZabbixDB[("Base Zabbix<br/>MariaDB · réseau monitoring")]
+            ZabbixServer -->|"TCP 3306"| ZabbixDB
+            ZabbixAgent["Zabbix Agent 2<br/>réseau monitoring"]
+            ZabbixAgent -->|"Checks actifs · TCP 10051"| ZabbixServer
 
-            subgraph n8n_net["Réseau Compose : n8n"]
-                N8N["n8n<br/>port 5678<br/>publication VM : 127.0.0.1:5678"]
-                N8NDB["PostgreSQL n8n<br/>port 5432"]
-            end
-
-            subgraph monitoring_net["Réseau Compose : monitoring"]
-                ZabbixWeb["Interface Zabbix<br/>port 8080<br/>publication VM : 127.0.0.1:8081"]
-                ZabbixServer["Zabbix Server<br/>port interne 10051"]
-                ZabbixDB["MariaDB Zabbix<br/>port 3306"]
-                ZabbixAgent["Zabbix Agent 2<br/>port interne 10050"]
-            end
-
-            DockerSocket[(Socket Docker<br/>découverte des conteneurs)]
+            DockerSocket[("/var/run/docker.sock")]
+            ZabbixAgent -. "API Docker<br/>découverte des conteneurs" .-> DockerSocket
+            Loopback["Interfaces publiées<br/>sur 127.0.0.1 uniquement"]
+            Loopback -. "TCP 5678" .-> N8N
+            Loopback -. "TCP 8081" .-> ZabbixWeb
         end
     end
 
-    PublishedHTTP --> Caddy
-    Caddy -->|"HTTP sur proxy"| WordPress
-    WordPress -->|"3306 sur database"| WPDB
-    N8N -->|"5432"| N8NDB
-    ZabbixWeb --> ZabbixServer
-    ZabbixWeb -->|"3306"| ZabbixDB
-    ZabbixServer -->|"3306"| ZabbixDB
-    ZabbixAgent -->|"checks actifs : 10051"| ZabbixServer
-    ZabbixAgent -. "API Docker locale" .-> DockerSocket
+    classDef public fill:#e8f3ff,stroke:#2673b8,color:#123;
+    classDef proxy fill:#e9f7ef,stroke:#27864a,color:#123;
+    classDef private fill:#f3edff,stroke:#7353a6,color:#123;
+    classDef database fill:#fff4df,stroke:#b87918,color:#123;
+    class PublicIP,NSG,HostPort public;
+    class Caddy,WordPress proxy;
+    class N8N,ZabbixWeb,ZabbixServer,ZabbixAgent private;
+    class WPDB,N8NDB,ZabbixDB,DockerSocket database;
 ```
 
 Le socket Docker donne à l’agent la visibilité sur les conteneurs du moteur de la VM. Pour ne découvrir que ceux du projet, ne faites pas tourner d’autres projets sur le même moteur Docker. Les ports `5678` et `8081` sont attachés à `127.0.0.1` sur la VM et se testent depuis le poste via un tunnel SSH ; le port `80` de Caddy est le seul port applicatif destiné à Internet.
