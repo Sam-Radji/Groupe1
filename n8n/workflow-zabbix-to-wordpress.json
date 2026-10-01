@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const b = $input.first().json.body || {};\n\n// Champs attendus, envoyés par le media type webhook de Zabbix :\n// host, problem, severity, status (PROBLEM / RESOLVED), eventId\nconst host = b.host || 'Inconnu';\nconst problem = b.problem || 'Problème non précisé';\nconst severity = b.severity || 'Not classified';\nconst status = (b.status || 'PROBLEM').toUpperCase();\n\nconst title = status === 'RESOLVED'\n  ? `Rétabli : ${host} - ${problem}`\n  : `Alerte : ${host} a un problème (${problem})`;\n\nconst content = status === 'RESOLVED'\n  ? `Le problème \"${problem}\" sur ${host} est résolu.`\n  : `Zabbix a détecté un problème sur ${host}.\\n\\nProblème : ${problem}\\nSévérité : ${severity}\\nStatut : ${status}`;\n\nreturn [{ json: { title, content, host, problem, severity, status } }];"
+        "jsCode": "const b = $input.first().json.body || {};\n\n// Champs attendus, envoyés par le media type webhook de Zabbix :\n// host, problem, severity, status (PROBLEM / RESOLVED)\nconst host = b.host || 'Inconnu';\nconst problem = b.problem || 'Problème non précisé';\nconst severity = b.severity || 'Not classified';\nconst status = (b.status || 'PROBLEM').toUpperCase();\n\nconst title = status === 'RESOLVED'\n  ? `Rétabli : ${host} - ${problem}`\n  : `Alerte : ${host} a un problème (${problem})`;\n\nconst content = status === 'RESOLVED'\n  ? `Le problème \"${problem}\" sur ${host} est résolu.`\n  : `Zabbix a détecté un problème sur ${host}.\\n\\nProblème : ${problem}\\nSévérité : ${severity}\\nStatut : ${status}`;\n\nreturn [{ json: { title, content, host, problem, severity, status } }];"
       },
       "id": "z1a2b3c4-0002-4000-8000-000000000002",
       "name": "Construire le message",
@@ -27,31 +27,30 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://wordpress:80/wp-json/wp/v2/posts",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpBasicAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ { \"title\": $json.title, \"content\": $json.content, \"status\": \"publish\" } }}",
-        "options": {}
+        "resource": "post",
+        "operation": "create",
+        "title": "={{ $json.title }}",
+        "additionalFields": {
+          "content": "={{ $json.content }}",
+          "status": "publish"
+        }
       },
       "id": "z1a2b3c4-0003-4000-8000-000000000003",
-      "name": "Publier sur WordPress",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "name": "Créer l'article WordPress",
+      "type": "n8n-nodes-base.wordpress",
+      "typeVersion": 1,
       "position": [480, 0],
       "credentials": {
-        "httpBasicAuth": {
+        "wordpressApi": {
           "id": "REMPLACER_PAR_ID_CREDENTIAL",
-          "name": "WordPress Application Password"
+          "name": "WordPress - Application Password"
         }
       }
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ { \"forwarded\": true, \"wordpressStatus\": $json.id ? \"created\" : \"error\" } }}",
+        "responseBody": "={{ { \"forwarded\": true, \"postId\": $json.id || null } }}",
         "options": {}
       },
       "id": "z1a2b3c4-0004-4000-8000-000000000004",
@@ -66,9 +65,9 @@
       "main": [[{ "node": "Construire le message", "type": "main", "index": 0 }]]
     },
     "Construire le message": {
-      "main": [[{ "node": "Publier sur WordPress", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Créer l'article WordPress", "type": "main", "index": 0 }]]
     },
-    "Publier sur WordPress": {
+    "Créer l'article WordPress": {
       "main": [[{ "node": "Répondre", "type": "main", "index": 0 }]]
     }
   },
