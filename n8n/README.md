@@ -1,122 +1,130 @@
 # Stack n8n
 
-Conteneurs : `n8n` (workflows et webhooks) et `n8n-db` (PostgreSQL).
+Conteneurs : `n8n` (workflows et webhooks), `n8n-db` (PostgreSQL), `n8n-agent` (Zabbix Agent 2).
 
 | Réseau | Sous-réseau | Membres | Rôle |
 |---|---|---|---|
 | `n8n-net` | 172.31.2.0/24 | n8n, n8n-db | Accès privé à la base |
-| `services-net` (externe) | 172.30.0.0/24 | n8n (+ WordPress, Zabbix) | Webhooks entrants, supervision |
+| `services-net` (externe) | 172.30.0.0/24 | n8n, n8n-agent (+ wordpress, Zabbix) | Webhooks entrants/sortants, supervision |
 
 La base `n8n-db` n'est que sur `n8n-net` et n'expose aucun port : ni WordPress ni Zabbix ne peuvent l'atteindre.
 
 ## Démarrage
 
 ```bash
-# 1. Réseau partagé (une seule fois par hôte Docker ; ignorer l'erreur s'il existe déjà)
-docker network create --driver bridge --subnet 172.30.0.0/24 services-net
+docker network create --driver bridge --subnet 172.30.0.0/24 services-net   # si pas déjà fait
 
-# 2. Configuration
-cp .env.example .env
-sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(openssl rand -hex 16)|" .env
-sed -i "s|^N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=$(openssl rand -hex 16)|" .env
-# renseigner PUBLIC_IP dans .env
+cp .env.example .env 2>/dev/null || cat > .env <<EOF2
+POSTGRES_USER=n8n
+POSTGRES_PASSWORD=$(openssl rand -hex 16)
+POSTGRES_DB=n8n
+N8N_ENCRYPTION_KEY=$(openssl rand -hex 16)
+PUBLIC_IP=METTRE_ICI_IP_PUBLIQUE_DE_LA_VM
+TZ=Europe/Paris
+EOF2
+# Éditer ensuite .env pour remplacer PUBLIC_IP par la vraie IP si besoin
 
-# 3. Lancement
 docker compose up -d
-docker compose ps        # n8n et n8n-db doivent être "healthy"
+docker compose ps   # n8n et n8n-db doivent être "healthy" ; n8n-agent "Up"
 ```
 
 Interface : `http://IP:5678`. Créer le compte propriétaire dès la première connexion.
 
-## Workflow de réception
+## Workflow 1 : WordPress -> n8n (réception d'une publication)
 
-1. Dans n8n : *Workflows > Import from file* et choisir `workflow-wordpress-webhook.json`.
-2. **Activer** le workflow (interrupteur en haut à droite). Sans cela, l'URL de production ne répond pas.
-3. URLs du webhook :
-   - production : `/webhook/wordpress` (workflow actif)
-   - test : `/webhook-test/wordpress` (uniquement après clic sur « Listen for test event »)
+Fichier : `workflow-wordpress-webhook.json`.
 
-Le workflow attend un JSON avec `event` et `title`, indique s'il est valide et renvoie la réponse.
+1. *Workflows > Import from file*, choisir ce fichier.
+2. **Activer** le workflow (interrupteur en haut à droite) — sans cela, l'URL de production renvoie une 404.
+3. URL : `/webhook/wordpress` (actif) — `/webhook-test/wordpress` seulement en mode écoute.
 
-## URL à donner au responsable WordPress
-
-```
-http://n8n:5678/webhook/wordpress
-```
-
-Cette URL fonctionne depuis un conteneur rattaché à `services-net` (résolution DNS Docker). Ne pas utiliser l'IP publique pour les communications inter-stacks.
-
-Corps attendu (POST, JSON) :
-
-```json
-{ "event": "post_published", "title": "Titre de l'article" }
-```
-
-## Tests
+Test :
 
 ```bash
-# Depuis l'hôte
 curl -X POST http://localhost:5678/webhook/wordpress \
   -H "Content-Type: application/json" \
   -d '{"event":"post_published","title":"Test"}'
-
-# Depuis services-net (simule WordPress)
-docker run --rm --network services-net curlimages/curl \
-  -s -X POST http://n8n:5678/webhook/wordpress \
-  -H "Content-Type: application/json" \
-  -d '{"event":"post_published","title":"Test"}'
-
-# Santé (ce que Zabbix contrôlera)
-docker run --rm --network services-net curlimages/curl -s http://n8n:5678/healthz
 ```
 
-Résultat attendu : `{"received":true,"valid":true,...}` et une exécution visible dans *Executions*.
+Résultat attendu : `{"received":true,"valid":true,...}`.
 
-Vérifier l'isolation réseau :
+## Workflow 2 : Zabbix -> n8n -> WordPress (alerte -> article)
+
+Fichier : `workflow-zabbix-to-wordpress.json`. Reçoit une alerte Zabbix sur `/webhook/zabbix-alert`, construit un titre/contenu, puis crée un article WordPress via le nœud natif **WordPress**.
+
+### Étape préalable côté WordPress
+
+Le responsable WordPress doit avoir autorisé les mots de passe d'application et vous avoir transmis :
+- l'identifiant `wp-admin` du compte
+- un mot de passe d'application (format `aaaa bbbb cccc dddd eeee ffff`, avec les espaces)
+
+Si ce n'est pas encore fait côté WordPress, voir `wordpress/README.md`, section « Autoriser les mots de passe d'application ».
+
+### Configuration dans n8n
+
+1. *Workflows > Import from file*, choisir `workflow-zabbix-to-wordpress.json`.
+2. *Credentials > New > WordPress API* :
+   - WordPress URL : `http://wordpress:80`
+   - Username : l'identifiant `wp-admin` transmis
+   - Password : le mot de passe d'application (avec les espaces, pas le mot de passe normal du compte)
+3. Ouvrir le nœud **Créer l'article WordPress**, sélectionner ce credential dans le menu déroulant.
+4. **Activer** le workflow.
+
+### Tester sans attendre Zabbix
 
 ```bash
-docker network inspect n8n_n8n-net --format '{{range .Containers}}{{.Name}} {{end}}'      # n8n n8n-db
-docker network inspect services-net --format '{{range .Containers}}{{.Name}} {{end}}'     # n8n + les autres
+curl -X POST http://localhost:5678/webhook/zabbix-alert \
+  -H "Content-Type: application/json" \
+  -d '{"host":"n8n","problem":"Test manuel","severity":"Warning","status":"PROBLEM"}'
 ```
+
+Vérifier qu'un article apparaît dans WordPress et qu'une exécution réussie apparaît dans *Executions*.
+
+### URL à transmettre au responsable Zabbix
+
+```
+http://n8n:5678/webhook/zabbix-alert
+```
+
+Corps JSON attendu (POST) :
+
+```json
+{ "host": "n8n", "problem": "RAM élevée", "severity": "High", "status": "PROBLEM" }
+```
+
+Voir `monitoring/README.md` pour la configuration exacte du Media type webhook côté Zabbix (script JS, paramètres, message templates).
+
+## Erreurs fréquentes et solutions
+
+| Erreur rencontrée | Cause | Solution |
+|---|---|---|
+| `network services-net declared as external, but could not be found` | Réseau pas encore créé | `docker network create --driver bridge --subnet 172.30.0.0/24 services-net` |
+| 404 sur `/webhook/...` | Le workflow correspondant n'est pas activé | Activer le toggle en haut à droite de l'éditeur |
+| `Authorization failed` / 401 sur le nœud WordPress | Username incorrect, mot de passe d'application mal copié (espaces), ou mots de passe d'application pas encore autorisés côté WordPress (HTTPS requis) | Vérifier le credential ; voir `wordpress/README.md` |
+| `rest_cannot_create` (401) | Le compte WordPress utilisé n'a pas les droits (doit être Administrateur ou Éditeur) | Utiliser un compte avec les bons droits |
+| Erreur HTTP 500 sur le nœud WordPress pendant un test de panne | WordPress est justement le service arrêté : n8n ne peut pas lui écrire tant qu'il est down | Attendre le redémarrage de WordPress ; Zabbix retente automatiquement (retries) |
+| n8n ne démarre pas | Mot de passe PostgreSQL du `.env` ne correspond plus au volume existant | `docker compose down -v` puis relancer (perte des workflows si pas exportés) |
 
 ## Test de panne (pour la démo)
 
 ```bash
-docker compose stop n8n      # Zabbix doit passer en PROBLEM
-docker compose start n8n     # puis retour à la normale
+docker compose stop n8n
+docker compose start n8n
+```
+
+## Vérifications réseau utiles
+
+```bash
+# n8n joignable par son nom depuis services-net
+docker run --rm --network services-net curlimages/curl -s http://n8n:5678/healthz
+
+# Isolation de la base : seuls n8n et n8n-db doivent apparaître
+docker network inspect n8n_n8n-net --format '{{range .Containers}}{{.Name}} {{end}}'
 ```
 
 ## Informations pour le responsable Zabbix
 
 - Un agent `n8n-agent` (Zabbix Agent 2) est inclus dans ce compose, connecté à `services-net`.
-- Créer dans Zabbix un hôte nommé **`n8n`** (doit correspondre exactement à `ZBX_HOSTNAME`), interface **Agent**, adresse DNS `n8n-agent`, port `10050`.
-- Ajouter le template **Docker by Zabbix agent 2** pour surveiller les conteneurs, et éventuellement **Linux by Zabbix agent 2** pour CPU/RAM de l'hôte.
-- Garder aussi, si besoin, le scénario web `http://n8n:5678/healthz` en complément (vérifie que l'application répond, pas seulement que l'agent est joignable).
-
-## Webhook entrant : alertes Zabbix -> article WordPress
-
-Workflow `workflow-zabbix-to-wordpress.json` : reçoit une alerte Zabbix sur `/webhook/zabbix-alert`, construit un titre et un contenu, puis crée un article sur WordPress via son API REST.
-
-1. Importer le workflow dans n8n, l'activer.
-2. Créer le credential **HTTP Basic Auth** dans le nœud *Publier sur WordPress* avec un Application Password WordPress (*Utilisateurs > Profil > Mots de passe d'application*).
-3. Donner au responsable Zabbix l'URL à appeler : `http://n8n:5678/webhook/zabbix-alert`, avec le corps JSON attendu :
-   ```json
-   { "host": "n8n", "problem": "RAM élevée", "severity": "High", "status": "PROBLEM" }
-   ```
-
-Test sans Zabbix :
-
-```bash
-curl -X POST http://localhost:5678/webhook/zabbix-alert \
-  -H "Content-Type: application/json" \
-  -d '{"host":"n8n","problem":"Test alerte","severity":"Warning","status":"PROBLEM"}'
-```
-
-Vérifier qu'un article apparaît dans WordPress.
-
-## Dépannage
-
-- **`network services-net declared as external, but could not be found`** : créer le réseau (étape 1).
-- **404 sur `/webhook/wordpress`** : le workflow n'est pas activé.
-- **n8n ne démarre pas** : `docker compose logs n8n` (souvent un mot de passe PostgreSQL modifié après la première création : `docker compose down -v` puis relancer).
-- **WordPress n'atteint pas n8n** : vérifier que WordPress est bien sur `services-net`.
+- Créer dans Zabbix un hôte nommé **`n8n`**, interface **Agent**, **Connect to : DNS**, DNS name `n8n-agent`, port `10050`.
+- Lier les templates **Linux by Zabbix agent** et **Docker by Zabbix agent 2**.
+- Scénario web complémentaire (optionnel) : URL `http://n8n:5678/healthz`, code attendu `200`.
